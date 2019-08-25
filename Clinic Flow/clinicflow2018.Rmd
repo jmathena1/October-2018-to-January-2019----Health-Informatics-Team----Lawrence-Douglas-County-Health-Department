@@ -1,0 +1,220 @@
+---
+title: "Clinic Flow and Volume (2018)"
+author: "John Mathena"
+date: "January 2, 2018"
+output: html_document
+---
+
+```{r pre-processing, include=FALSE}
+
+wd <- setwd("//dc03/Groups/INFORMATICS/John Mathena/Projects/Clinic Flow/2018")
+
+library(data.table)
+library(openair)
+library(ggplot2)
+library(plotly)
+library(rdd)
+library(rddtools)
+library(reshape)
+library(zipcode)
+library(foreign)
+library(plyr)
+library(lubridate)
+library(DT)
+library(shiny)
+library(knitr)
+
+#filenames <- list.files(path = wd, pattern = "*.csv")
+#CSV.list <- lapply(filenames, read.csv)
+clinic_flow_master <-  read.csv(file = "clinicflow2018_FULL.csv", stringsAsFactors = F)
+# Import school csvs as list and then bind into single dataset ####
+
+clinic_flow_workingR_TITO <- clinic_flow_master[!clinic_flow_master$Time_in==""&
+                                           !clinic_flow_master$Time_out=="",]
+clinic_flow_workingR_TITO <- clinic_flow_workingR_TITO[
+  !duplicated(clinic_flow_workingR_TITO$Encounter_no),]
+
+x <- clinic_flow_workingR_TITO
+
+x$Encounter_date <- as_datetime(
+  x$Encounter_date, format = "%m/%d/%Y")
+
+x$Dob <- as_datetime(
+   x$Dob, format = "%m/%d/%Y")
+
+x$Time_in <- as_datetime(x$Time_in, tz="",
+                                             format = "%m/%d/%Y %I:%M:%S %p")
+
+x$Time_out <- as_datetime(x$Time_out, tz="",
+                                             format = "%m/%d/%Y %I:%M:%S %p")
+ 
+x$Encounter_Month <- months(x$Encounter_date)
+
+x$Season[x$Encounter_Month=="December"|
+                           x$Encounter_Month=="January"|
+                           x$Encounter_Month=="February"] <- "Winter"
+
+x$Season[x$Encounter_Month=="March"|
+                             x$Encounter_Month=="April"|
+                             x$Encounter_Month=="May"] <- "Spring"
+
+x$Season[x$Encounter_Month=="June"|
+                             x$Encounter_Month=="July"|
+                             x$Encounter_Month=="August"] <- "Summer"
+
+x$Season[x$Encounter_Month=="September"|
+                             x$Encounter_Month=="October"|
+                             x$Encounter_Month=="November"] <- "Fall"
+
+x$Length_of_Stay <- as.numeric(difftime(x$Time_out, 
+                                                x$Time_in, 
+                                                units = c("mins")))
+x$Time_of_Day[x$Time_in >= 
+                                   as.POSIXct("1899-12-30 09:00:00") &
+                                   x$Time_in <
+                                   as.POSIXct("1899-12-30 12:00:00")] <- "Morning"
+x$Time_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 12:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 14:30:00")] <- "Early Afternoon"
+x$Time_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 14:30:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 17:00:00")] <- "Late Afternoon"
+x$Time_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 17:00:00")] <- "Evening"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 09:55:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 11:00:00")] <- "10am"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 11:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 12:00:00")] <- "11am"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 12:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 13:00:00")] <- "12 noon"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 13:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 14:00:00")] <- "1pm"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 14:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 15:00:00")] <- "2pm"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 15:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 16:00:00")] <- "3pm"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 16:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 17:00:00")] <- "4pm"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 17:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 18:00:00")] <- "5pm"
+x$Hour_of_Day[x$Time_in >= 
+                                  as.POSIXct("1899-12-30 18:00:00") &
+                                  x$Time_in <
+                                  as.POSIXct("1899-12-30 19:00:00")] <- "6pm"
+clinic_flow_workingR_TITO <- x
+```
+
+## Description
+
+This is a report on average length of stay and volume grouped by hour of day and type of service provided. Data provided by Lawrence-Douglas County Health Department Clinic.
+
+```{r tables, echo=FALSE}
+
+clinic_flow_by_service_HoD <- aggregate(x=clinic_flow_workingR_TITO$Length_of_Stay,
+                                        by=list(clinic_flow_workingR_TITO$Clinic, 
+                                             clinic_flow_workingR_TITO$Hour_of_Day), 
+                                        mean)
+colnames(clinic_flow_by_service_HoD) <- c("Service", "HoD", "Avg LoS (mins)")
+DT::datatable(clinic_flow_by_service_HoD, caption = "Average Clinic Flow by Service and HoD")
+
+clinic_volume_by_service_HoD <- aggregate(clinic_flow_workingR_TITO$Encounter_no,
+                                          by=list(clinic_flow_workingR_TITO$Clinic, 
+                                               clinic_flow_workingR_TITO$Hour_of_Day),
+                                          FUN = function(x){
+                                            length(x)/12
+                                          })
+colnames(clinic_volume_by_service_HoD) <- c("Service", "HoD", "# of Encounters per month")
+DT::datatable(clinic_volume_by_service_HoD, caption = "Monthly Encounters by Service and HoD")
+
+clinic_volume_by_Season_HoD <- aggregate(x= clinic_flow_workingR_TITO$Encounter_no,
+                                         by=list(clinic_flow_workingR_TITO$Season,
+                                              clinic_flow_workingR_TITO$Hour_of_Day),
+                                         FUN = function(x){
+                                        length(x)/60
+                                         })
+colnames(clinic_volume_by_Season_HoD) <- c("Season", "HoD", "Avg # of Encounters")
+DT::datatable(clinic_volume_by_Season_HoD, caption = "Seasonal Monthly Encounters by Service and HoD")
+```
+
+## Visuals
+
+
+```{r flow and volume, echo=FALSE}
+flow_by_service_HoD_plot <- ggplot(clinic_flow_by_service_HoD, 
+       aes(x=clinic_flow_by_service_HoD$HoD, 
+           y=clinic_flow_by_service_HoD$`Avg LoS (mins)`,
+           color = clinic_flow_by_service_HoD$Service,
+           group = clinic_flow_by_service_HoD$Service)) +
+         geom_line() +
+  labs(title = "STI Visits take the longest - 2018",
+       x = "Hour of Day",
+       y = "Average Length of Stay (mins)")+
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="grey40", size=12, angle=45, hjust=.5, vjust=.5),
+        axis.text.y = element_text(colour="grey40", size=12),
+        strip.text = element_text(size=12),
+        text = element_text(size=14),
+        legend.title = element_blank())
+
+volume_by_service_HoD_plot <- ggplot(clinic_volume_by_service_HoD, 
+                                   aes(x=clinic_flow_by_service_HoD$HoD, y=clinic_volume_by_service_HoD$`# of Encounters per month`,
+                                       group = clinic_volume_by_service_HoD$Service, 
+                                       color = clinic_volume_by_service_HoD$Service))+
+  geom_line() +
+  labs(title = "10am and 2-3pm are peak hours - 2018",
+       x = "Hour of Day",
+       y = "# of Encounters per month")+
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="grey40", size=12, angle=45, hjust=.5, vjust=.5),
+        axis.text.y = element_text(colour="grey40", size=12),
+        strip.text = element_text(size=12),
+        text = element_text(size=12),
+        legend.title = element_blank()) 
+
+volume_by_Season_HoD_plot <- ggplot(clinic_volume_by_Season_HoD, 
+                                     aes(x=clinic_volume_by_Season_HoD$HoD, 
+                                         y=clinic_volume_by_Season_HoD$`Avg # of Encounters`,
+                                         group = clinic_volume_by_Season_HoD$Season, 
+                                         color = clinic_volume_by_Season_HoD$Season))+
+  geom_line() +
+  labs(title = "10am and 2-3pm are peak hours - 2018",
+       x = "Hour of Day",
+       y = "Avg # of Encounters per day")+
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="grey40", size=12, angle=45, hjust=.5, vjust=.5),
+        axis.text.y = element_text(colour="grey40", size=12),
+        strip.text = element_text(size=12),
+        text = element_text(size=12),
+        legend.title = element_blank()) 
+
+flow_2018 <- ggplotly(p=flow_by_service_HoD_plot)
+flow_2018 <- style(flow_2018, hoverinfo="y")
+  
+volume_2018 <- ggplotly(volume_by_service_HoD_plot)
+volume_2018 <- style(volume_2018, hoverinfo = "y")
+
+volume_seasons_2018 <- ggplotly(volume_by_Season_HoD_plot)
+volume_seasons_2018 <- style(volume_seasons_2018, hoverinfo="y")
+
+flow_2018
+volume_2018
+volume_seasons_2018
+```

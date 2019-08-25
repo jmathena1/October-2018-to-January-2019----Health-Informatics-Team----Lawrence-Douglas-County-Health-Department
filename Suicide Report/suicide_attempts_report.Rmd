@@ -1,0 +1,277 @@
+---
+title: "DG Suicide Attempts"
+author: "John Mathena"
+date: "December 31, 2018"
+output: html_document
+---
+
+```{r pre-processing, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+setwd("//dc03/Groups/INFORMATICS/John Mathena/Projects/Suicide report/2018")
+
+library(NLP)
+library(tm)
+library(stringr)
+library(sqldf)
+library(rJava)
+library(mallet)
+library(XML)
+library(wordcloud)
+library(topicmodels)
+library(tidytext)
+library(ggplot2)
+library(dplyr)
+library(gofastr)
+library(tidyr)
+library(data.table)
+library(readtext)
+library(xlsx)
+library(rlang)
+library(mtconnectR)
+library(rlist)
+library(plotly)
+
+ICD10 <- read.csv(file = "attempts_ICD10.csv", stringsAsFactors = F)
+##read in csv with all demographics regarding DG county residents admitted to hospitals####
+##related to suicide####
+ICD10$CaseNotes <- with(ICD10$CaseNotes, paste0(
+  ICD10$TriageNotesOrig, ICD10$Chief_Complaint_Combo))
+##combine triage notes and complaint notes to make topic modeling corpus larger####
+colnames(ICD10)[colnames(ICD10)=="Age.Group"] <- "Age_Group"
+##rename Age group column####
+ICD10_deceased <- ICD10[ICD10$Disposition.Category=="DECEASED",]
+ICD10<- ICD10[ICD10$Disposition.Category!="DECEASED",]
+##filter out patients who died of suicide####
+
+which(colnames(ICD10)=="DDConverted")
+which(colnames(ICD10)=="ChiefComplaintUpdates")
+which(colnames(ICD10)=="Diagnosis_Combo")
+which(colnames(ICD10)=="Admit_Reason_Combo")
+which(colnames(ICD10)=="Patient_City")
+
+## patient city found under ICD10$Patient_City (column 152) ####
+## ICD-10 codes found under ICD10$DDConverted (column 108) ####
+## Complaint column found under ICD10$ChiefComplaintUpdates (column 54) ####
+## Diagnosis column found under ICD10$Diagnosis_Combo (column 43) ####
+## Admission reason found under ICD10$Admit_Reason_Combo (column 35) ####
+## Age (column 19) ####
+## Sex (column 18) ####
+## identifying column is ICD10$EssenceID (column 16) ####
+## Facility Name (column 4)####
+## Time (column 3)####
+## Date (column 2)####
+
+vars <- c("EssenceID", "C_Unique_Patient_ID", "Date", "Time", 
+          "Facility.Name", "Age", "Age_Group",
+          "Sex", "Admit_Reason_Combo", "Diagnosis_Combo",
+          "ChiefComplaintUpdates",
+          "Discharge.Diagnosis", "Patient_City", "CaseNotes")
+ICD10_working <- ICD10[vars]
+#create subset with useful information####
+
+ICD10_working$Date <- as.Date(ICD10_working$Date, format = "%m/%d/%Y")
+#convert the date to format that makes R happy####
+
+ICD10_working <- ICD10_working[order(ICD10_working$Date),]
+#order the ICD10_working file by date####
+
+ICD10_working$Patient_City[ICD10_working$Patient_City=="LAWRENCE"] <- "Lawrence"
+ICD10_working$Patient_City[ICD10_working$Patient_City=="BALDWIN CITY"] <- "Baldwin City"
+ICD10_working$Patient_City[ICD10_working$Patient_City=="BALDWIN"] <- "Baldwin City"
+ICD10_working$Patient_City[ICD10_working$Patient_City=="EUDORA"] <- "Eudora"
+ICD10_working$Patient_City[ICD10_working$Patient_City=="LECOMPTON"] <- "Lecompton"
+ICD10_working$Patient_City[ICD10_working$Patient_City=="OVERBROOK"] <- "Overbrook"
+#Some cells have the city entered in all caps so this series of commands fixes that####
+
+ICD10_working$Age_Group[ICD10_working$Age<15] <- "<15"
+ICD10_working$Age_Group[ICD10_working$Age >= 15 & ICD10_working$Age <= 17] <- "15-17"
+ICD10_working$Age_Group[ICD10_working$Age >= 18 & ICD10_working$Age <= 19] <- "18-19"
+ICD10_working$Age_Group[ICD10_working$Age >= 20 & ICD10_working$Age <= 24] <- "20-24"
+ICD10_working$Age_Group[ICD10_working$Age >= 25 & ICD10_working$Age <= 29] <- "25-29"
+ICD10_working$Age_Group[ICD10_working$Age >= 30 & ICD10_working$Age <= 34] <- "30-34"
+ICD10_working$Age_Group[ICD10_working$Age >= 35 & ICD10_working$Age <= 39] <- "35-39"
+ICD10_working$Age_Group[ICD10_working$Age >= 40 & ICD10_working$Age <= 44] <- "40-44"
+ICD10_working$Age_Group[ICD10_working$Age > 44 & ICD10_working$Age <= 50] <- "45-50"
+ICD10_working$Age_Group[ICD10_working$Age > 50 & ICD10_working$Age <= 55] <- "51-55"
+ICD10_working$Age_Group[ICD10_working$Age > 55 & ICD10_working$Age <= 60] <- "56-60"
+ICD10_working$Age_Group[ICD10_working$Age > 60 & ICD10_working$Age <= 65] <- "61-65"
+ICD10_working$Age_Group[ICD10_working$Age > 65 & ICD10_working$Age <= 70] <- "66-70"
+ICD10_working$Age_Group[ICD10_working$Age > 70 & ICD10_working$Age <= 75] <- "71-75"
+ICD10_working$Age_Group[ICD10_working$Age > 75 & ICD10_working$Age <= 80] <- "76-80"
+ICD10_working$Age_Group[ICD10_working$Age > 80] <- "81+"
+
+#create age groups based on column with ages of patients####
+
+ICD10_agegroup_sex <- aggregate(ICD10_working$EssenceID,
+                                by=list(ICD10_working$Age_Group, ICD10_working$Sex),
+                                length)
+colnames(ICD10_agegroup_sex) <- c("Age Group", "Sex", "# of Residents")
+ICD10_residence <- as.data.frame(table(ICD10_working$Patient_City))
+colnames(ICD10_residence) <- c("City", "# of Patients")
+#Make frequency tables for age/sex and city of origin####
+
+patient_id_ICD10 <- data.frame(table(ICD10$C_Unique_Patient_ID))
+colnames(patient_id_ICD10) <- c("Patient ID", "# of cases")
+#Make frequency table counting visits per patient####
+
+repeats_ICD10 <- patient_id_ICD10[patient_id_ICD10$`# of cases`>1,]
+repeats_ICD10 <- repeats_ICD10[order(repeats_ICD10$`# of cases`, decreasing = T),]
+colnames(repeats_ICD10) <- c("Patient ID", "# of cases")
+#Make table of patients who have multiple cases organized from most cases to least cases####
+
+vars2 <- match(repeats_ICD10$`Patient ID`, ICD10$C_Unique_Patient_ID)
+#create variable containing rows of patients that have multiple cases####
+
+repeats_ICD10_dem <- ICD10[vars2,]
+#create table with only repeat patients####
+repeats_ICD10_dem <- repeats_ICD10_dem[vars]
+#create table with only useful information about the repeat patients####
+
+repeats_ICD10_dem <- sqldf('
+                   select * from repeats_ICD10_dem
+                   left join repeats_ICD10
+                   on repeats_ICD10_dem.C_Unique_Patient_ID = repeats_ICD10.`Patient ID`
+                     ')
+repeats_ICD10_dem <- repeats_ICD10_dem[,-c(15)]
+#create table with repeat patient demographics and their frequencies####
+repeats_ICD10_dem_age_sex <- as.data.frame.matrix(table(repeats_ICD10_dem$Age_Group, 
+                                                        repeats_ICD10_dem$Sex))
+ICD10_working$Month <- months(ICD10_working$Date)
+
+ICD10_working$Discharge.Diagnosis <- str_remove_all(
+  ICD10_working$Discharge.Diagnosis, "[~]")
+ICD10_working$Discharge.Diagnosis <- str_replace_all(
+  ICD10_working$Discharge.Diagnosis, "[;]", " ")
+ICD10_working$Discharge.Diagnosis <- 
+  sapply(ICD10_working$Discharge.Diagnosis, 
+         function(x) paste(unique(unlist(strsplit(x, " ")))))
+ICD10_working$Method[
+  grepl("T14", names(ICD10_working$Discharge.Diagnosis)) |
+  grepl("T3", names(ICD10_working$Discharge.Diagnosis))  |
+  grepl("T4", names(ICD10_working$Discharge.Diagnosis))  |
+  grepl("T5", names(ICD10_working$Discharge.Diagnosis))  | 
+  grepl("T6", names(ICD10_working$Discharge.Diagnosis))  |
+  grepl("T7", names(ICD10_working$Discharge.Diagnosis))      
+] <- "Intentional Poisoning"
+
+ICD10_working$Method[
+  grepl("X7", names(ICD10_working$Discharge.Diagnosis)) |
+  grepl("X8", names(ICD10_working$Discharge.Diagnosis))     
+] <- "Self Harm with Object"
+
+ICD10_working$Method[
+  (grepl("X7", names(ICD10_working$Discharge.Diagnosis)) |
+   grepl("X8", names(ICD10_working$Discharge.Diagnosis))) &
+  (grepl("T", names(ICD10_working$Discharge.Diagnosis)))  
+] <- "Poisoning and Object"
+
+ICD10_method <- aggregate(ICD10_working$EssenceID,
+                          by=list(ICD10_working$Age_Group, ICD10_working$Method),
+                          length)
+```
+
+## Total Attempts
+```{r echo = F}
+encounters <- length(ICD10_working$EssenceID)
+repeats <- length(repeats_ICD10$`Patient ID`)
+print(paste(encounters, c("suicides were attempted by Douglas County Residents in 2018"), 
+            sep=" "))
+print(paste(repeats, c("Douglas County residents attempted suicide more than once in 2018"),
+            sep=" "))
+```
+## Data Tables
+```{r tables, echo=FALSE}
+DT::datatable(ICD10_residence, caption = "City of Residence Breakdown")
+DT::datatable(ICD10_agegroup_sex, caption = "Age and Sex breakdown")
+
+ICD10_2018 <- aggregate(x=ICD10_working$EssenceID,
+                        by=list(ICD10_working$Month),
+                        length)
+ICD10_2018$Group.1 <- factor(ICD10_2018$Group.1, levels = c("January", "February", "March", 
+                                                            "April", "May", "June", "July",
+                                                            "August", "September", "October",
+                                                            "November", "December"))
+ICD10_2018 <- ICD10_2018[order(ICD10_2018$Group.1),]
+DT::datatable(ICD10_2018, caption = "Number of attempts per month in 2018")
+```
+## Visuals
+```{r visuals, echo=F}
+ICD10_residence_plot <- ggplot(ICD10_residence, 
+       aes(x=ICD10_residence$City, 
+           y=ICD10_residence$`# of Patients`,
+           color= ICD10_residence$City,
+           group = ICD10_residence$City)) +
+         geom_bar(stat="identity")+
+  labs(title = "Most patients reside in Lawrence (2018)",
+       x = "Municipality",
+       y = "# of residents who attempted Suicide")+
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="grey40", size=12, angle=45, hjust=.5, vjust=.5),
+        axis.text.y = element_text(colour="grey40", size=12),
+        strip.text = element_text(size=12),
+        text = element_text(size=14),
+        legend.title = element_blank())
+ICD10_agegroup_sex_plot <- ggplot(ICD10_agegroup_sex,
+       aes(x=ICD10_agegroup_sex$`Age Group`, 
+           y=ICD10_agegroup_sex$`# of Residents`,
+           fill = ICD10_agegroup_sex$Sex)) +
+         geom_bar(stat = "Identity")+
+  labs(title = "20-24 and 81+ are largest age groups (2018)",
+       x = "Age Group",
+       y = "# of residents who attempted Suicide")+
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="grey40", size=12, angle=45, hjust=.5, vjust=.5),
+        axis.text.y = element_text(colour="grey40", size=12),
+        strip.text = element_text(size=12),
+        text = element_text(size=14),
+        legend.title = element_blank())
+
+ICD10_method_plot <- ggplot(ICD10_method,
+       aes(x=ICD10_method$Group.1, 
+           y=ICD10_method$x,
+           fill = ICD10_method$Group.2)) +
+         geom_bar(stat = "Identity")+
+  labs(title = "Most Attempts are Attempted Poisonings (2018)",
+       x = "Age Group",
+       y = "# of residents who attempted Suicide")+
+  theme_bw() +
+  theme(axis.text.x = element_text(colour="grey40", size=12, angle=45, hjust=.5, vjust=.5),
+        axis.text.y = element_text(colour="grey40", size=12),
+        strip.text = element_text(size=12),
+        text = element_text(size=14),
+        legend.title = element_blank())
+
+ICD10_2018_plot <- ggplot(ICD10_2018, 
+                          aes(x=ICD10_2018$Group.1,
+                              y=ICD10_2018$x,
+                              color=ICD10_2018$Group.1)) +
+  geom_bar(stat = "Identity") +
+  labs(title = "Suicide attempts by Month (2018)",
+       x = "Month",
+       y = "Number of suicide attempts") +
+   theme_bw() +
+  theme(axis.text.x = element_text(colour="grey40", size=12, angle=45, hjust=.5, vjust=.5),
+        axis.text.y = element_text(colour="grey40", size=12),
+        strip.text = element_text(size=12),
+        text = element_text(size=14),
+        legend.title = element_blank())
+
+ICD10_residence_plot <- ggplotly(p=ICD10_residence_plot)
+ICD10_residence_plot <- style(ICD10_residence_plot, hoverinfo="y")
+
+ICD10_agegroup_sex_plot <- ggplotly(p=ICD10_agegroup_sex_plot)
+ICD10_agegroup_sex_plot <- style(ICD10_agegroup_sex_plot, hoverinfo="y")
+
+ICD10_method_plot <- ggplotly(p=ICD10_method_plot)
+ICD10_method_plot <- style(ICD10_method_plot, hoverinfo="y")
+
+ICD10_2018_plot <- ggplotly(p=ICD10_2018_plot)
+ICD10_2018_plot <- style(ICD10_2018_plot, hoverinfo="y")
+
+ICD10_residence_plot
+ICD10_agegroup_sex_plot
+ICD10_method_plot
+ICD10_2018_plot
+````
+
+
