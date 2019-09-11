@@ -1,6 +1,6 @@
 # October 2018 to January 2019----Health Informatics Team----Lawrence Douglas County Health Department
 
-Summary: This files here are a sample of the projects I worked on while an Analyst at the Lawrence Douglas County Health Department.
+Summary: These files here are a sample of the projects I worked on while an Analyst at the Lawrence Douglas County Health Department.
 
 Installation: Each lettered header represents a different folder and a different project.
 
